@@ -2,7 +2,7 @@ import { MaxUint256 } from '@ethersproject/constants'
 import { TransactionResponse } from '@ethersproject/providers'
 import { Trade, TokenAmount, CurrencyAmount, ETHER } from '@uniswap/sdk'
 import { useCallback, useMemo } from 'react'
-import { ROUTER_ADDRESS } from '../constants'
+import { ROUTER_ADDRESS, NOT_STANDARD_APPROVE_TOKEN } from '../constants'
 import { useTokenAllowance } from '../data/Allowances'
 import { getTradeVersion, useV1TradeExchangeAddress } from '../data/V1'
 import { Field } from '../state/swap/actions'
@@ -46,6 +46,7 @@ export function useApproveCallback(
   }, [amountToApprove, currentAllowance, pendingApproval, spender])
 
   const tokenContract = useTokenContract(token?.address)
+
   const addTransaction = useTransactionAdder()
 
   const approve = useCallback(async (): Promise<void> => {
@@ -74,27 +75,50 @@ export function useApproveCallback(
     }
 
     let useExact = false
-    const estimatedGas = await tokenContract.estimateGas.approve(spender, MaxUint256).catch(() => {
-      // general fallback for tokens who restrict approval amounts
-      useExact = true
-      return tokenContract.estimateGas.approve(spender, amountToApprove.raw.toString())
-    })
+    if (NOT_STANDARD_APPROVE_TOKEN.find((e) => e.address === token?.address)) {
+      const estimatedGas = await tokenContract.estimateGas.approve(spender, currentAllowance?.raw.toString(), MaxUint256).catch(() => {
+        // general fallback for tokens who restrict approval amounts
+        useExact = true
+        return tokenContract.estimateGas.approve(spender, currentAllowance?.raw.toString(), amountToApprove.raw.toString())
+      })
 
-    return tokenContract
-      .approve(spender, useExact ? amountToApprove.raw.toString() : MaxUint256, {
-        gasLimit: calculateGasMargin(estimatedGas)
-      })
-      .then((response: TransactionResponse) => {
-        addTransaction(response, {
-          summary: 'Approve ' + amountToApprove.currency.symbol,
-          approval: { tokenAddress: token.address, spender: spender }
+      return tokenContract
+        .approve(spender, currentAllowance?.raw.toString(), useExact ? amountToApprove.raw.toString() : MaxUint256, {
+          gasLimit: calculateGasMargin(estimatedGas)
         })
+        .then((response: TransactionResponse) => {
+          addTransaction(response, {
+            summary: 'Approve ' + amountToApprove.currency.symbol,
+            approval: { tokenAddress: token.address, spender: spender }
+          })
+        })
+        .catch((error: Error) => {
+          console.debug('Failed to approve token', error)
+          throw error
+        })
+    } else {
+      const estimatedGas = await tokenContract.estimateGas.approve(spender, MaxUint256).catch(() => {
+        // general fallback for tokens who restrict approval amounts
+        useExact = true
+        return tokenContract.estimateGas.approve(spender, amountToApprove.raw.toString())
       })
-      .catch((error: Error) => {
-        console.debug('Failed to approve token', error)
-        throw error
-      })
-  }, [approvalState, token, tokenContract, amountToApprove, spender, addTransaction])
+
+      return tokenContract
+        .approve(spender, useExact ? amountToApprove.raw.toString() : MaxUint256, {
+          gasLimit: calculateGasMargin(estimatedGas)
+        })
+        .then((response: TransactionResponse) => {
+          addTransaction(response, {
+            summary: 'Approve ' + amountToApprove.currency.symbol,
+            approval: { tokenAddress: token.address, spender: spender }
+          })
+        })
+        .catch((error: Error) => {
+          console.debug('Failed to approve token', error)
+          throw error
+        })
+    }
+  }, [approvalState, token, tokenContract, amountToApprove, spender, addTransaction, currentAllowance])
 
   return [approvalState, approve]
 }
@@ -109,3 +133,4 @@ export function useApproveCallbackFromTrade(trade?: Trade, allowedSlippage = 0) 
   const v1ExchangeAddress = useV1TradeExchangeAddress(trade)
   return useApproveCallback(amountToApprove, tradeIsV1 ? v1ExchangeAddress : ROUTER_ADDRESS)
 }
+
